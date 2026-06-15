@@ -1,0 +1,618 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, viewport-fit=cover" />
+<title>ドローンゲーム</title>
+<script type="text/javascript">
+
+// --- ゲーム状態管理用変数 ---
+let mode = -1; // -1:動画、0:タイトル、5:ゲーム本編
+let score = 0;
+let dronemode = 1; // 1:箱を持っている、0:持っていない（要補給）
+let haikeiy = 0;
+
+// ドローンの位置（下側に固定）
+let dronex = 320;
+let droney = 400; 
+
+// 的（target0）の管理用変数
+let targetX = 0;
+let targetY = -50;
+let targetSpeed = 3;
+let targetAlive = false;
+
+// 落とした箱（弾）の管理用変数
+let boxX = 0;
+let boxY = 0;
+let boxAlive = false;
+let boxSpeed = 8; 
+
+// 爆発エフェクト（fire.png）の管理
+let fireX = 0;
+let fireY = 0;
+let fireTimer = 0; 
+
+// 背景切り替え用エフェクトタイマー
+let effectBgTimer = 0; // 0:通常(haikei1), 1以上:haikei2表示用
+let flashBgTimer = 0;  // 0:通常(haikei1), 1以上:haikei3表示用
+
+// 得点判定テキストのアニメーション用
+let hitText = "";
+let hitTextTimer = 0;
+let hitTextX = 0;
+let hitTextY = 0;
+
+// 風と桜のエフェクト（sakura.gif）の管理
+let kaze = 0; 
+let sakurax = 0; 
+let kazeTimer = 0; 
+
+// 操作・タッチ管理
+let keysPressed = {};
+window.keysPressed = keysPressed;
+
+let titleFlashTimer = 0;
+
+// キャンバス
+let canvas, ctx;
+
+// --- 【追加】音声オブジェクトの定義 ---
+let audioBgm = new Audio("bgm.mp3");
+audioBgm.loop = true; // BGMはループ再生
+
+let audioDrop = new Audio("drop.mp3");
+let audioHit = new Audio("hit.mp3");
+
+function init() {
+    canvas = document.getElementById("canvas");
+    if (canvas) ctx = canvas.getContext("2d");
+
+    draw();
+
+    let startvideo = document.getElementById("startvideo");
+    if (startvideo) {
+        startvideo.muted = true;
+        startvideo.playsInline = true;
+        startvideo.play().catch(e => console.log("動画自動再生ブロック回避"));
+
+        // iPhone用：動画タッチでスキップ
+        startvideo.addEventListener("touchstart", function(e) {
+            e.preventDefault(); 
+            clickVideo();
+        }, { passive: false });
+    }
+
+    // --- 【スマホ用】タイトル画面のスタート専用タッチイベント ---
+    window.addEventListener("touchstart", function(e) {
+        let startvideo = document.getElementById("startvideo");
+        if (startvideo && startvideo.style.display !== "none") return;
+
+        // タイトル画面のときだけ、画面のどこをタップしてもスタートできるようにする
+        if (mode === 0) {
+            e.preventDefault();
+            startGame();
+        }
+    }, { passive: false });
+
+    // --- 【PC・スマホ共通】キーボードイベント ---
+    window.addEventListener("keydown", function(e) {
+        keysPressed[e.keyCode] = true;
+        
+        if (mode === 5) {
+            if (e.keyCode === 32 && dronemode === 1 && !boxAlive) {
+                dropBox(); 
+            }
+            if (e.keyCode === 13 && dronemode === 0) {
+                replenishBox();
+            }
+        }
+    });
+    window.addEventListener("keyup", function(e) {
+        keysPressed[e.keyCode] = false;
+        if (mode === 0 && (e.keyCode === 13 || e.keyCode === 32)) {
+            startGame(); 
+        }
+    });
+
+    setInterval(mainloop, 30);
+}
+
+// 外部（下のスクリプト）から直接アクションを実行できるように関数化してwindowに登録
+window.triggerSpaceKey = function() {
+    if (mode === 5 && dronemode === 1 && !boxAlive) {
+        dropBox();
+    }
+};
+
+window.triggerEnterKey = function() {
+    if (mode === 5 && dronemode === 0) {
+        replenishBox();
+    }
+};
+
+function clickVideo() {
+    let startvideo = document.getElementById("startvideo");
+    if (startvideo) {
+        startvideo.style.display = "none";
+        startvideo.pause();
+    }
+    mode = 0; 
+}
+
+function startGame() {
+    mode = 5; 
+    dronemode = 1;
+    dronex = 320;
+    droney = 400; 
+    haikeiy = 0;
+    score = 0;
+    boxAlive = false;
+    fireTimer = 0;
+    effectBgTimer = 0;
+    flashBgTimer = 0;
+    hitTextTimer = 0;
+    kaze = 0;
+    sakurax = 0;
+    kazeTimer = 0;
+
+    // --- 【追加】ゲーム開始時にBGMを再生（スマホのタップに連動しているため再生可能） ---
+    audioBgm.currentTime = 0;
+    audioBgm.play().catch(e => console.log("BGM再生エラー:", e));
+
+    spawnTarget();
+}
+
+function spawnTarget() {
+    targetX = Math.floor(Math.random() * 520) + 60; 
+    targetY = -40; 
+    targetAlive = true;
+}
+
+// 箱を落とす処理
+function dropBox() {
+    dronemode = 0;
+    boxX = dronex; 
+    boxY = droney; 
+    boxAlive = true; 
+
+    effectBgTimer = 18; 
+
+    // --- 【追加】箱を落とした時の効果音 ---
+    audioDrop.currentTime = 0;
+    audioDrop.play().catch(e => console.log("効果音再生エラー:", e));
+
+    if (targetAlive) {
+        let distX = Math.abs(dronex - targetX);
+        let distY = Math.abs(droney - targetY);
+        let distance = Math.sqrt(distX * distX + distY * distY);
+
+        if (distance < 40) {
+            if (distance <= 18) {
+                score += 100;
+                hitText = "CRITICAL! +100";
+            } else {
+                score += 50;
+                hitText = "HIT! +50";
+            }
+
+            hitTextX = targetX;
+            hitTextY = targetY - 20;
+            hitTextTimer = 30;
+
+            fireX = targetX;
+            fireY = targetY;
+            fireTimer = 15; 
+            
+            flashBgTimer = 30;
+
+            // --- 【追加】命中した時の効果音 ---
+            audioHit.currentTime = 0;
+            audioHit.play().catch(e => console.log("効果音再生エラー:", e));
+
+            boxAlive = false;
+            targetAlive = false;
+            
+            setTimeout(spawnTarget, 1000);
+        }
+    }
+}
+
+function replenishBox() {
+    dronemode = 1;
+}
+
+// 移動・ゲームの物理演算
+function updateGame() {
+    if (mode !== 5) return;
+
+    let speed = 7; 
+
+    // 矢印キー移動（PCおよびスマホボタン共通）
+    if (keysPressed[37]) dronex -= speed; 
+    if (keysPressed[39]) dronex += speed; 
+    if (keysPressed[38]) droney -= speed; 
+    if (keysPressed[40]) droney += speed; 
+
+    // 風の影響
+    dronex += kaze * 0.8;
+
+    // 移動制限
+    if (dronex < 40) dronex = 40;
+    if (dronex > 600) dronex = 600;
+    if (droney < 250) droney = 250; 
+    if (droney > 430) droney = 430; 
+
+    // --- 的（target0）の移動処理 ---
+    if (targetAlive) {
+        targetY += targetSpeed;
+        if (targetY > 480) {
+            spawnTarget(); 
+        }
+    }
+
+    // --- 落とした箱の移動（空中ヒット用） ---
+    if (boxAlive) {
+        boxY += boxSpeed; 
+        if (boxY > 500) {
+            boxAlive = false;
+        }
+
+        if (targetAlive) {
+            let distX = Math.abs(boxX - targetX);
+            let distY = Math.abs(boxY - targetY);
+            let distance = Math.sqrt(distX * distX + distY * distY);
+
+            if (distance < 35) { 
+                if (distance <= 15) {
+                    score += 100;
+                    hitText = "CRITICAL! +100";
+                } else {
+                    score += 50;
+                    hitText = "HIT! +50";
+                }
+
+                hitTextX = targetX;
+                hitTextY = targetY - 20;
+                hitTextTimer = 30;
+
+                fireX = targetX;
+                fireY = targetY;
+                fireTimer = 15; 
+
+                flashBgTimer = 30;
+
+                // --- 【追加】空中命中時の効果音 ---
+                audioHit.currentTime = 0;
+                audioHit.play().catch(e => console.log("効果音再生エラー:", e));
+                
+                boxAlive = false;
+                targetAlive = false;
+                
+                setTimeout(spawnTarget, 1000);
+            }
+        }
+    }
+
+    // タイマー減算
+    if (fireTimer > 0) fireTimer--;
+    if (hitTextTimer > 0) hitTextTimer--;
+    if (effectBgTimer > 0) effectBgTimer--; 
+    if (flashBgTimer > 0) flashBgTimer--;   
+
+    // 風と桜の計算
+    kazeTimer++;
+    if (kazeTimer > 100) { 
+        kaze = Math.floor(Math.random() * 5) - 2; 
+        kazeTimer = 0;
+    }
+    sakurax += kaze * 2;
+    if (sakurax > 640) sakurax = 0;
+    if (sakurax < 0) sakurax = 640;
+}
+
+function mainloop() {
+    if (mode === 0) {
+        titleFlashTimer = (titleFlashTimer + 1) % 30;
+    }
+    if (mode === 5) {
+        updateGame();
+        haikeiy += 2;
+        if (haikeiy >= 480) haikeiy = 0;
+    }
+    draw(); 
+}
+
+function draw() {
+    if (!ctx) return;
+
+    if (mode === 0) {
+        let bg0 = document.getElementById("img_haikei0");
+        if (bg0 && bg0.complete && bg0.naturalWidth !== 0) {
+            ctx.drawImage(bg0, 0, 0);
+        } else {
+            ctx.fillStyle = "#111";
+            ctx.fillRect(0, 0, 640, 480);
+        }
+
+        if (titleFlashTimer < 15) {
+            ctx.fillStyle = "#ffffff";
+            ctx.strokeStyle = "#ff4500";
+            ctx.lineWidth = 4;
+            ctx.font = "bold 26px sans-serif";
+            ctx.textAlign = "center";
+            ctx.strokeText("画面をタップしてミッション開始", 320, 260);
+            ctx.fillText("画面をタップしてミッション開始", 320, 260);
+            ctx.textAlign = "left";
+        }
+    } 
+    else if (mode === 5) {
+        
+        let currentBgId = "img_haikei1"; 
+
+        if (flashBgTimer > 0) {
+            currentBgId = "img_haikei3";
+        } else if (effectBgTimer > 0) {
+            currentBgId = "img_haikei2";
+        }
+
+        let bg = document.getElementById(currentBgId);
+        if (bg && bg.complete && bg.naturalWidth !== 0) {
+            ctx.drawImage(bg, 0, haikeiy);
+            ctx.drawImage(bg, 0, haikeiy - 480);
+        } else {
+            if (currentBgId === "img_haikei3") ctx.fillStyle = "#ff3300"; 
+            else if (currentBgId === "img_haikei2") ctx.fillStyle = "#ffffff"; 
+            else ctx.fillStyle = "#1e3f20"; 
+            ctx.fillRect(0, 0, 640, 480);
+        }
+
+        // 2. 的（target0.png）の描画
+        if (targetAlive) {
+            let targetImg = document.getElementById("img_target0");
+            if (targetImg && targetImg.complete && targetImg.naturalWidth !== 0) {
+                ctx.drawImage(targetImg, targetX - targetImg.width/2, targetY - targetImg.height/2);
+            } else {
+                ctx.fillStyle = "#ff0000"; 
+                ctx.beginPath();
+                ctx.arc(targetX, targetY, 20, 0, Math.PI*2);
+                ctx.fill();
+            }
+        }
+
+        // 3. 落とされた箱の描画
+        if (boxAlive) {
+            let boxImg = document.getElementById("img_box0");
+            if (boxImg && boxImg.complete && boxImg.naturalWidth !== 0) {
+                ctx.drawImage(boxImg, boxX - boxImg.width/2, boxY - boxImg.height/2);
+            } else {
+                ctx.fillStyle = "#ffff00";
+                ctx.fillRect(boxX - 10, boxY - 10, 20, 20);
+            }
+        }
+
+        // 4. 的中時の爆破エフェクト（fire.png）
+        if (fireTimer > 0) {
+            let fireImg = document.getElementById("img_fire");
+            if (fireImg && fireImg.complete && fireImg.naturalWidth !== 0) {
+                ctx.drawImage(fireImg, fireX - fireImg.width/2, fireY - fireImg.height/2);
+            } else {
+                ctx.fillStyle = "#ff4500";
+                ctx.beginPath();
+                ctx.arc(fireX, fireY, 35, 0, Math.PI*2);
+                ctx.fill();
+            }
+        }
+
+        // 5. 風による桜の花びら（sakura.gif）
+        if (kaze !== 0) {
+            let sakuraImg = document.getElementById("img_sakura");
+            if (sakuraImg && sakuraImg.complete && sakuraImg.naturalWidth !== 0) {
+                ctx.drawImage(sakuraImg, sakurax, 0);
+                ctx.drawImage(sakuraImg, sakurax - 640, 0);
+            }
+        }
+
+        // 6. ドローン（drone.png）本体の描画
+        let droneImg = document.getElementById("img_drone");
+        if (droneImg && droneImg.complete && droneImg.naturalWidth !== 0) {
+            ctx.drawImage(droneImg, dronex - droneImg.width/2, droney - droneImg.height/2);
+        } else {
+            ctx.fillStyle = "#00ff00"; 
+            ctx.fillRect(dronex - 25, droney - 15, 50, 30);
+            
+            ctx.strokeStyle = "#ff0000";
+            ctx.lineWidth = 2;
+            ctx.beginPath(); ctx.moveTo(dronex - 15, droney); ctx.lineTo(dronex + 15, droney); ctx.stroke();
+            ctx.beginPath(); ctx.moveTo(dronex, droney - 15); ctx.lineTo(dronex, droney + 15); ctx.stroke();
+        }
+
+        // 7. ドローンが持っている箱の描画
+        if (dronemode === 1) {
+            let boxImg = document.getElementById("img_box0");
+            if (boxImg && boxImg.complete && boxImg.naturalWidth !== 0) {
+                ctx.drawImage(boxImg, dronex - boxImg.width/2, droney + 15);
+            } else {
+                ctx.fillStyle = "#d2b48c";
+                ctx.fillRect(dronex - 15, droney + 15, 30, 20);
+            }
+        }
+
+        // 8. 的中ポップアップ得点テキストの描画
+        if (hitTextTimer > 0) {
+            ctx.fillStyle = hitText.includes("CRITICAL") ? "#ffcc00" : "#ffffff";
+            ctx.font = "bold 18px Arial";
+            ctx.textAlign = "center";
+            ctx.fillText(hitText, hitTextX, hitTextY);
+            ctx.textAlign = "left";
+        }
+
+        // 9. UIスコア表示
+        ctx.fillStyle = "#ffffff";
+        ctx.font = "bold 20px Arial";
+        ctx.fillText("SCORE: " + score, 20, 30);
+        
+        if (kaze !== 0) {
+            ctx.fillStyle = "#00ffff";
+            ctx.font = "14px Arial";
+            ctx.fillText("WIND: " + (kaze > 0 ? "➔ ".repeat(kaze) : "⬅ ".repeat(Math.abs(kaze))), 20, 60);
+        }
+        
+        if (dronemode === 0) {
+            ctx.fillStyle = "#ffcc00";
+            ctx.font = "bold 14px Arial";
+            ctx.fillText("【箱なし】補給ボタン(🔄)を押して！", 20, 90);
+        }
+    }
+    else {
+        ctx.fillStyle = "#000";
+        ctx.fillRect(0, 0, 640, 480);
+    }
+}
+
+document.addEventListener("DOMContentLoaded", function() { init(); });
+</script>
+
+<style>
+  /* 全体のタッチ誤作動防止設定 */
+  * { touch-action: none; -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; }
+  body { margin: 0; padding: 0; background: #000; overflow: hidden; }
+  #canvas { max-width: 100%; max-height: 70vh; display: block; margin: 0 auto; object-fit: contain; }
+</style>
+
+<style>
+#mobileControls {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 15px;
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-end;
+  padding: 0 10px;
+  pointer-events: none;
+  z-index: 9999;
+}
+/* 左側：十字移動パッド（2段組み） */
+#movePad {
+  display: grid;
+  grid-template-columns: repeat(3, 50px);
+  grid-template-rows: repeat(2, 50px);
+  gap: 5px;
+  pointer-events: auto;
+}
+/* 右側：アクションパッド */
+#actionPad {
+  display: flex;
+  gap: 10px;
+  pointer-events: auto;
+}
+.ctrlBtn {
+  font-size: 20px;
+  border-radius: 12px;
+  border: 1px solid #555;
+  background: rgba(255, 255, 255, 0.85);
+  color: #000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 4px 6px rgba(0,0,0,0.3);
+}
+/* 十字配置用のグリッド割り当て */
+#btnUp    { grid-column: 2; grid-row: 1; }
+#btnLeft  { grid-column: 1; grid-row: 2; }
+#btnDown  { grid-column: 2; grid-row: 2; }
+#btnRight { grid-column: 3; grid-row: 2; }
+
+/* アクションボタンは少し大きめに */
+.actionBtn {
+  width: 65px;
+  height: 65px;
+  font-size: 24px;
+}
+</style>
+
+<script>
+document.addEventListener("DOMContentLoaded",()=>{
+ const wrap=document.createElement("div");
+ wrap.id="mobileControls";
+ wrap.innerHTML=`
+<div id="movePad">
+  <button class="ctrlBtn" id="btnUp" style="width:50px; height:50px;">▲</button>
+  <button class="ctrlBtn" id="btnLeft" style="width:50px; height:50px;">◀</button>
+  <button class="ctrlBtn" id="btnDown" style="width:50px; height:50px;">▼</button>
+  <button class="ctrlBtn" id="btnRight" style="width:50px; height:50px;">▶</button>
+</div>
+<div id="actionPad">
+  <button class="ctrlBtn actionBtn" id="btnDrop">📦</button>
+  <button class="ctrlBtn actionBtn" id="btnFill">🔄</button>
+</div>`;
+ document.body.appendChild(wrap);
+
+ // 移動パッド連動
+ const map={btnLeft:37,btnUp:38,btnRight:39,btnDown:40};
+ Object.entries(map).forEach(([id,key])=>{
+   const b=document.getElementById(id);
+   
+   const startPress = (e) => {
+     e.preventDefault();
+     if(window.keysPressed) window.keysPressed[key]=true;
+   };
+   
+   const endPress = (e) => {
+     e.preventDefault();
+     if(window.keysPressed) window.keysPressed[key]=false;
+   };
+
+   b.addEventListener("touchstart", startPress, {passive: false});
+   b.addEventListener("touchend", endPress, {passive: false});
+   b.addEventListener("mousedown", startPress);
+   b.addEventListener("mouseup", endPress);
+   b.addEventListener("mouseleave", endPress);
+ });
+
+ // アクションボタン連動
+ const dropBtn = document.getElementById("btnDrop");
+ const handleDrop = (e) => {
+   e.preventDefault();
+   if(window.triggerSpaceKey) {
+       window.triggerSpaceKey();
+   }
+ };
+ dropBtn.addEventListener("touchstart", handleDrop, {passive: false});
+ dropBtn.addEventListener("mousedown", handleDrop);
+
+ const fillBtn = document.getElementById("btnFill");
+ const handleFill = (e) => {
+   e.preventDefault();
+   if(window.triggerEnterKey) {
+       window.triggerEnterKey();
+   }
+ };
+ fillBtn.addEventListener("touchstart", handleFill, {passive: false});
+ fillBtn.addEventListener("mousedown", handleFill);
+});
+</script>
+
+</head>
+<body>
+
+<div style="position:relative; width:100%; max-width:640px; height:auto; aspect-ratio:4/3; margin: 0 auto; background:#000;">
+<canvas id="canvas" width="640" height="480"></canvas>
+<video id="startvideo" src="start.mp4" width="640" height="480" style="position:absolute; left:0; top:0; width:100%; height:100%; cursor: pointer;" autoplay loop muted playsinline onclick="clickVideo();"></video>
+</div>
+
+<img id="img_box0" src="box0.png" style="display:none" />
+<img id="img_box1" src="box1.png" style="display:none" />
+<img id="img_box2" src="box2.png" style="display:none" />
+<img id="img_haikei0" src="haikei0.png" style="display:none" />
+<img id="img_haikei1" src="haikei1.png" style="display:none" />
+<img id="img_haikei2" src="haikei2.png" style="display:none" />
+<img id="img_haikei3" src="haikei3.png" style="display:none" />
+<img id="img_drone" src="drone.png" style="display:none" />
+<img id="img_target0" src="target0.png" style="display:none" />
+<img id="img_fire" src="fire.png" style="display:none" />
+<img id="img_sakura" src="sakura.gif" style="display:none" />
+
+</body>
+</html>
